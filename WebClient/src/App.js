@@ -1,25 +1,42 @@
 import React, { useState, useEffect } from "react";
-import axios from "axios";
-
-// Mock de carros
-const mockCarros = [
-  { modelo: "fusca", ano: 2014 },
-  { modelo: "civic", ano: 2023 },
-  { modelo: "corolla", ano: 2020 },
-];
+import { carService, calculationService, pedidoService, apiUtils } from "./api";
 
 function App() {
+  const [cars, setCars] = useState([]);
   const [selectedCar, setSelectedCar] = useState(null);
   const [parts, setParts] = useState([]);
   const [selectedParts, setSelectedParts] = useState({}); // {partId: quantidade}
   const [pricing, setPricing] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [carsLoading, setCarsLoading] = useState(false);
   const [pricingLoading, setPricingLoading] = useState(false);
   const [error, setError] = useState(null);
   const [pricingError, setPricingError] = useState(null);
   const [purchaseResult, setPurchaseResult] = useState(null);
   const [showPurchasePage, setShowPurchasePage] = useState(false);
   const [purchaseLoading, setPurchaseLoading] = useState(false);
+
+  // Carregar carros da API ao inicializar
+  useEffect(() => {
+    const loadCars = async () => {
+      setCarsLoading(true);
+      setError(null); // Limpar erro anterior
+      try {
+        console.log("🚗 Carregando carros da API...");
+        const response = await carService.getAll();
+        console.log("✅ Carros carregados:", response.data);
+        setCars(response.data.data || []);
+      } catch (err) {
+        console.error("❌ Erro ao carregar carros:", err);
+        setError(`Erro ao carregar carros: ${err.response?.data?.message || err.message}`);
+        setCars([]); // Array vazio se não conseguir carregar da API
+      } finally {
+        setCarsLoading(false);
+      }
+    };
+
+    loadCars();
+  }, []);
 
   const handleCarSelect = async (car) => {
     setSelectedCar(car);
@@ -29,19 +46,20 @@ function App() {
     setError(null);
 
     try {
-      console.log("Enviando requisição para P-Api:", car);
+      console.log("🔧 Buscando peças para o carro:", car);
 
-      const response = await axios.post("http://127.0.0.1:8000/get-pecas", {
-        modelo: car.modelo,
-        ano: car.ano,
-      });
+      const response = await carService.getPecas(car.id);
 
-      console.log("Resposta recebida:", response.data);
-      setParts(response.data.pecas || []);
+      console.log("✅ Peças encontradas:", response.data);
+      setParts(response.data.data || []);
+      
+      if (!response.data.data || response.data.data.length === 0) {
+        setError("Nenhuma peça encontrada para este carro");
+      }
     } catch (err) {
-      console.error("Erro ao buscar peças:", err);
+      console.error("❌ Erro ao buscar peças:", err);
       setError(
-        `Erro ao buscar peças: ${err.response?.data?.detail || err.message}`
+        `Erro ao buscar peças: ${err.response?.data?.message || err.message}`
       );
       setParts([]);
     } finally {
@@ -61,7 +79,7 @@ function App() {
     setSelectedParts(newSelectedParts);
   };
 
-  //tempo real precos
+  //cálculo de preços em tempo real via Microsserviço B
   useEffect(() => {
     const calculatePricing = async () => {
       const selectedPartsList = Object.entries(selectedParts);
@@ -76,29 +94,25 @@ function App() {
       setPricingError(null);
 
       try {
-        const itens = selectedPartsList.map(([partId, quantidade]) => {
-          const part = parts.find((p) => p.id === partId);
-          return {
-            peca: {
-              id: part.id,
-              nome: part.nome,
-              valor: part.valor,
-            },
-            quantidade: quantidade,
-          };
-        });
+        // Formatar itens para o Microsserviço B
+        const items = apiUtils.formatItemsForCalculation(selectedParts, parts);
 
-        console.log("Calculando preço para itens:", itens);
+        console.log("💰 Enviando para Microsserviço B:", items);
 
-        const response = await axios.post("http://127.0.0.1:8000/calcular", {
-          itens: itens,
-        });
+        // Chamar Microsserviço B para cálculo
+        const response = await calculationService.calculatePrice(items);
 
-        console.log("Preço calculado:", response.data);
-        setPricing(response.data);
+        console.log("✅ Preço calculado pelo Microsserviço B:", response.data);
+        
+        if (response.data.status === 'success') {
+          setPricing(response.data.data);
+        } else {
+          setPricingError(response.data.message);
+          setPricing(null);
+        }
       } catch (err) {
-        console.error("Erro ao calcular preço:", err);
-        setPricingError(err.response?.data?.detail || err.message);
+        console.error("❌ Erro ao calcular preço via Microsserviço B:", err);
+        setPricingError(err.response?.data?.message || err.message);
         setPricing(null);
       } finally {
         setPricingLoading(false);
@@ -129,34 +143,45 @@ function App() {
     setPurchaseLoading(true);
     
     try {
-      const itens = Object.entries(selectedParts).map(([partId, quantidade]) => {
-        const part = parts.find(p => p.id === partId);
-        return {
-          peca: {
-            id: part.id,
-            nome: part.nome,
-            valor: part.valor
-          },
-          quantidade: quantidade
+      // Formatar itens para o Microsserviço B
+      const items = apiUtils.formatItemsForCalculation(selectedParts, parts);
+      
+      console.log('🛒 Enviando pedido para Microsserviço B:', { items });
+      
+      // Criar pedido via Microsserviço B
+      const response = await pedidoService.create({ items });
+      
+      if (response.data.status === 'success') {
+        console.log('✅ Pedido criado via Microsserviço B:', response.data);
+        
+        // Formatar resposta para o componente de confirmação
+        const orderData = response.data.data;
+        const mockResponse = {
+          pedidoId: orderData.pedido_id,
+          status: 'Confirmado',
+          dataPedido: orderData.data_pedido,
+          subtotal: pricing.subtotal,
+          frete: pricing.frete,
+          valorTotal: pricing.total,
+          relatorio: orderData.relatorio,
+          itensComprados: orderData.relatorio.itens.map(item => ({
+            quantidade: item.quantidade,
+            peca: {
+              nome: item.nome_peca,
+              valor: item.valor_unitario
+            }
+          }))
         };
-      });
-      
-      const valorTotal = (pricing.preco || 0) + (pricing.frete || 0);
-      
-      console.log('Enviando requisição de compra:', { itens, valor_total: valorTotal });
-      
-      const response = await axios.post('http://localhost:8000/pagar', {
-        itens: itens,
-        valor_total: valorTotal
-      });
-      
-      console.log('Compra realizada com sucesso:', response.data);
-      setPurchaseResult(response.data);
-      setShowPurchasePage(true);
+        
+        setPurchaseResult(mockResponse);
+        setShowPurchasePage(true);
+      } else {
+        throw new Error(response.data.message || 'Erro ao criar pedido');
+      }
       
     } catch (error) {
-      console.error('Erro ao finalizar compra:', error);
-      alert(`Erro ao finalizar compra: ${error.response?.data?.detail || error.message}`);
+      console.error('❌ Erro ao finalizar compra via Microsserviço B:', error);
+      alert(`Erro ao finalizar compra: ${error.response?.data?.message || error.message}`);
     } finally {
       setPurchaseLoading(false);
     }
@@ -245,20 +270,38 @@ function App() {
         {/* Sidebar Verde Claro */}
         <aside className="sidebar">
           <h2>Selecione um Carro</h2>
-          <div className="car-list">
-            {mockCarros.map((car, index) => (
-              <div
-                key={index}
-                className={`car-card ${
-                  selectedCar?.modelo === car.modelo ? "selected" : ""
-                }`}
-                onClick={() => handleCarSelect(car)}
-              >
-                <h3>{car.modelo}</h3>
-                <p>Ano: {car.ano}</p>
-              </div>
-            ))}
-          </div>
+          {carsLoading ? (
+            <div className="loading">🔄 Carregando carros...</div>
+          ) : error ? (
+            <div className="error-message">
+              <p>❌ {error}</p>
+              <p style={{fontSize: '0.9rem', marginTop: '10px'}}>
+                Verifique se a API Django está rodando em localhost:8000
+              </p>
+            </div>
+          ) : cars.length === 0 ? (
+            <div className="empty-state">
+              <p>📭 Nenhum carro encontrado</p>
+              <p style={{fontSize: '0.9rem', marginTop: '10px'}}>
+                Cadastre carros no Django Admin primeiro
+              </p>
+            </div>
+          ) : (
+            <div className="car-list">
+              {cars.map((car) => (
+                <div
+                  key={car.id}
+                  className={`car-card ${
+                    selectedCar?.id === car.id ? "selected" : ""
+                  }`}
+                  onClick={() => handleCarSelect(car)}
+                >
+                  <h3>{car.modelo}</h3>
+                  <p>Ano: {car.ano}</p>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Resumo do Orçamento na Sidebar */}
           {pricing && (
@@ -267,7 +310,7 @@ function App() {
               <div className="pricing-details">
                 <div className="pricing-line">
                   <span>Subtotal:</span>
-                  <span>R$ {(pricing.preco || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                  <span>R$ {(pricing.subtotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                 </div>
                 <div className="pricing-line">
                   <span>Frete:</span>
@@ -275,7 +318,7 @@ function App() {
                 </div>
                 <div className="pricing-total">
                   <span>Total:</span>
-                  <span>R$ {((pricing.preco || 0) + (pricing.frete || 0)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                  <span>R$ {(pricing.total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                 </div>
               </div>
               
