@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { carService, calculationService, pedidoService, apiUtils } from "./api";
+import CartPage from "./CartPage";
 
 function App() {
   const [cars, setCars] = useState([]);
@@ -15,6 +16,7 @@ function App() {
   const [purchaseResult, setPurchaseResult] = useState(null);
   const [showPurchasePage, setShowPurchasePage] = useState(false);
   const [purchaseLoading, setPurchaseLoading] = useState(false);
+  const [showCartPage, setShowCartPage] = useState(false);
 
   // Carregar carros da API ao inicializar
   useEffect(() => {
@@ -38,6 +40,28 @@ function App() {
     loadCars();
   }, []);
 
+  // Abrir carrinho
+  const onOpenCart = () => {
+    if (getTotalItems() > 0) {
+      setShowCartPage(true);
+    } else {
+      alert("Seu carrinho está vazio! Adicione alguns itens primeiro.");
+    }
+  };
+
+  const onBackFromCart = () => {
+    setShowCartPage(false);
+  };
+
+  // Resetar app para nova compra
+  const restartApp = () => {
+    setSelectedCar(null);
+    setSelectedParts({});
+    setPricing(null);
+    setPurchaseResult(null);
+    setShowCartPage(false);
+  };
+
   const handleCarSelect = async (car) => {
     setSelectedCar(car);
     setSelectedParts({});
@@ -52,7 +76,7 @@ function App() {
 
       console.log("✅ Peças encontradas:", response.data);
       setParts(response.data.data || []);
-      
+
       if (!response.data.data || response.data.data.length === 0) {
         setError("Nenhuma peça encontrada para este carro");
       }
@@ -68,13 +92,18 @@ function App() {
   };
 
   const handlePartQuantityChange = (partId, quantity) => {
+    // Garantir que partId seja sempre string para consistência
+    const normalizedPartId = String(partId);
     const newSelectedParts = { ...selectedParts };
 
     if (quantity > 0) {
-      newSelectedParts[partId] = quantity;
+      newSelectedParts[normalizedPartId] = quantity;
     } else {
-      delete newSelectedParts[partId];
+      delete newSelectedParts[normalizedPartId];
     }
+
+    console.log("🔧 handlePartQuantityChange - partId:", partId, "normalizedPartId:", normalizedPartId, "quantity:", quantity);
+    console.log("🔧 newSelectedParts:", newSelectedParts);
 
     setSelectedParts(newSelectedParts);
   };
@@ -103,7 +132,7 @@ function App() {
         const response = await calculationService.calculatePrice(items);
 
         console.log("✅ Preço calculado pelo Microsserviço B:", response.data);
-        
+
         if (response.data.status === 'success') {
           setPricing(response.data.data);
         } else {
@@ -139,21 +168,21 @@ function App() {
 
   const handlePurchase = async () => {
     if (!pricing || getTotalItems() === 0) return;
-    
+
     setPurchaseLoading(true);
-    
+
     try {
       // Formatar itens para o Microsserviço B
       const items = apiUtils.formatItemsForCalculation(selectedParts, parts);
-      
+
       console.log('🛒 Enviando pedido para Microsserviço B:', { items });
-      
+
       // Criar pedido via Microsserviço B
       const response = await pedidoService.create({ items });
-      
+
       if (response.data.status === 'success') {
         console.log('✅ Pedido criado via Microsserviço B:', response.data);
-        
+
         // Formatar resposta para o componente de confirmação
         const orderData = response.data.data;
         const mockResponse = {
@@ -172,13 +201,13 @@ function App() {
             }
           }))
         };
-        
+
         setPurchaseResult(mockResponse);
         setShowPurchasePage(true);
       } else {
         throw new Error(response.data.message || 'Erro ao criar pedido');
       }
-      
+
     } catch (error) {
       console.error('❌ Erro ao finalizar compra via Microsserviço B:', error);
       alert(`Erro ao finalizar compra: ${error.response?.data?.message || error.message}`);
@@ -187,71 +216,21 @@ function App() {
     }
   };
 
-  const handleBackToShopping = () => {
-    setShowPurchasePage(false);
-    setPurchaseResult(null);
-    setSelectedParts({});
-    setPricing(null);
-    setSelectedCar(null);
-  };
+  if (showCartPage) {
+    return (
+      <CartPage
+        pricing={pricing}
+        selectedParts={selectedParts}
+        parts={parts}
+        onBack={onBackFromCart}
+        purchaseResult={purchaseResult}
+        setPurchaseResult={setPurchaseResult}
+        getTotalItems={getTotalItems}
+        setPurchaseLoading={() => { }}
+        returnHome={restartApp}
 
-  // Componente de confirmação de compra
-  const PurchaseConfirmation = () => (
-    <div className="purchase-confirmation">
-      <header className="header">
-        <h1>✅ Compra Realizada com Sucesso!</h1>
-      </header>
-      
-      <div className="main-content">
-        <div className="purchase-details">
-          <div className="order-summary">
-            <h2>Pedido: {purchaseResult.pedidoId || purchaseResult.pedido_id}</h2>
-            <div className="order-info">
-              <p><strong>Status:</strong> {purchaseResult.status}</p>
-              <p><strong>Data:</strong> {new Date(purchaseResult.dataPedido || purchaseResult.data_pedido).toLocaleString('pt-BR')}</p>
-            </div>
-            
-            <div className="pricing-breakdown">
-              <h3>💰 Resumo Financeiro</h3>
-              <div className="pricing-line">
-                <span>Subtotal:</span>
-                <span>R$ {(purchaseResult.subtotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-              </div>
-              <div className="pricing-line">
-                <span>Frete:</span>
-                <span>R$ {(purchaseResult.frete || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-              </div>
-              <div className="pricing-total">
-                <span>Total Pago:</span>
-                <span>R$ {(purchaseResult.valorTotal || purchaseResult.valor_total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-              </div>
-            </div>
-            
-            <div className="items-purchased">
-              <h3>📦 Itens Comprados</h3>
-              {(purchaseResult.itensComprados || purchaseResult.itens_comprados || []).map((item, index) => (
-                <div key={index} className="purchased-item">
-                  <span className="item-qty">{item.quantidade}x</span>
-                  <span className="item-name">{item.peca.nome}</span>
-                  <span className="item-price">R$ {(item.peca.valor * item.quantidade).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-                </div>
-              ))}
-            </div>
-            
-            <button 
-              className="back-button"
-              onClick={handleBackToShopping}
-            >
-              🛒 Nova Compra
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  if (showPurchasePage && purchaseResult) {
-    return <PurchaseConfirmation />;
+      />
+    );
   }
 
   return (
@@ -259,6 +238,10 @@ function App() {
       {/* Header Verde */}
       <header className="header">
         <h1>🚗 Catálogo de Peças Automotivas</h1>
+         <button className="cart" onClick={onOpenCart}>
+          <span className="cart-icon">🛒</span>
+          <span className="cart-count">{getTotalItems()}</span>
+        </button>
         {getTotalItems() > 0 && (
           <div style={{ fontSize: "0.9rem", opacity: 0.9 }}>
             {getTotalItems()} item(s) selecionado(s)
@@ -275,14 +258,14 @@ function App() {
           ) : error ? (
             <div className="error-message">
               <p>❌ {error}</p>
-              <p style={{fontSize: '0.9rem', marginTop: '10px'}}>
+              <p style={{ fontSize: '0.9rem', marginTop: '10px' }}>
                 Verifique se a API Django está rodando em localhost:8000
               </p>
             </div>
           ) : cars.length === 0 ? (
             <div className="empty-state">
               <p>📭 Nenhum carro encontrado</p>
-              <p style={{fontSize: '0.9rem', marginTop: '10px'}}>
+              <p style={{ fontSize: '0.9rem', marginTop: '10px' }}>
                 Cadastre carros no Django Admin primeiro
               </p>
             </div>
@@ -291,9 +274,8 @@ function App() {
               {cars.map((car) => (
                 <div
                   key={car.id}
-                  className={`car-card ${
-                    selectedCar?.id === car.id ? "selected" : ""
-                  }`}
+                  className={`car-card ${selectedCar?.id === car.id ? "selected" : ""
+                    }`}
                   onClick={() => handleCarSelect(car)}
                 >
                   <h3>{car.modelo}</h3>
@@ -321,11 +303,11 @@ function App() {
                   <span>R$ {(pricing.total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                 </div>
               </div>
-              
+
               {getTotalItems() > 0 && (
-                <button 
+                <button
                   className="purchase-button"
-                  onClick={handlePurchase}
+                  onClick={onOpenCart}
                   disabled={purchaseLoading}
                   style={{
                     width: '100%',
@@ -341,7 +323,7 @@ function App() {
                     opacity: purchaseLoading ? 0.7 : 1
                   }}
                 >
-                  {purchaseLoading ? '🔄 Processando...' : '🛒 Finalizar Compra'}
+                  {purchaseLoading ? '🔄 Processando...' : '🛒 Ver Carrinho'}
                 </button>
               )}
             </div>
